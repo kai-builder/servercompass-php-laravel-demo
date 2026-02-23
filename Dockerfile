@@ -1,53 +1,38 @@
 FROM php:8.4-fpm-alpine
 
-# Install system dependencies
-RUN apk add --no-cache \
-    git \
-    curl \
-    libpng-dev \
-    libjpeg-turbo-dev \
-    freetype-dev \
-    libzip-dev \
-    zip \
-    unzip \
-    oniguruma-dev \
-    sqlite-dev \
-    nginx \
-    supervisor
-
-# Install PHP extensions
-RUN docker-php-ext-configure gd --with-freetype --with-jpeg \
-    && docker-php-ext-install pdo pdo_mysql pdo_sqlite mbstring exif pcntl bcmath gd zip
+# Install dependencies and PHP extensions in one layer
+# Using install-php-extensions for MUCH faster builds (pre-compiled)
+ADD --chmod=0755 https://github.com/mlocati/docker-php-extension-installer/releases/latest/download/install-php-extensions /usr/local/bin/
+RUN apk add --no-cache nginx supervisor curl sqlite-dev \
+    && install-php-extensions pdo_mysql pdo_sqlite mbstring exif pcntl bcmath gd zip opcache \
+    && rm -rf /var/cache/apk/*
 
 # Install Composer
-COPY --from=composer:latest /usr/bin/composer /usr/bin/composer
+COPY --from=composer:2 /usr/bin/composer /usr/bin/composer
 
 # Set working directory
 WORKDIR /var/www/html
 
-# Copy composer files first for better caching
+# Copy composer files first for dependency caching
 COPY composer.json composer.lock ./
 
-# Install dependencies (no dev dependencies for production)
-RUN composer install --no-dev --no-scripts --no-autoloader --prefer-dist
+# Install dependencies
+RUN composer install --no-dev --no-scripts --no-autoloader --prefer-dist --no-progress
 
 # Copy application files
 COPY . .
 
-# Generate optimized autoloader
-RUN composer dump-autoload --optimize
-
-# Set permissions
-RUN chown -R www-data:www-data /var/www/html \
-    && chmod -R 755 /var/www/html/storage \
-    && chmod -R 755 /var/www/html/bootstrap/cache
-
-# Create SQLite database if not exists
-RUN touch /var/www/html/database/database.sqlite \
-    && chown www-data:www-data /var/www/html/database/database.sqlite
+# Setup environment, generate key if needed, and set permissions
+RUN composer dump-autoload --optimize \
+    && cp -n .env.example .env || true \
+    && php artisan key:generate --force \
+    && chown -R www-data:www-data /var/www/html \
+    && chmod -R 755 storage bootstrap/cache \
+    && touch database/database.sqlite \
+    && chown www-data:www-data database/database.sqlite \
+    && mkdir -p /run/nginx
 
 # Configure Nginx
-RUN mkdir -p /run/nginx
 COPY <<EOF /etc/nginx/http.d/default.conf
 server {
     listen 80;
@@ -77,7 +62,8 @@ COPY <<EOF /etc/supervisord.conf
 [supervisord]
 nodaemon=true
 user=root
-logfile=/var/log/supervisord.log
+logfile=/dev/null
+logfile_maxbytes=0
 pidfile=/var/run/supervisord.pid
 
 [program:php-fpm]
@@ -99,12 +85,9 @@ stderr_logfile=/dev/stderr
 stderr_logfile_maxbytes=0
 EOF
 
-# Expose port
 EXPOSE 80
 
-# Health check
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
     CMD curl -f http://localhost/ || exit 1
 
-# Start supervisor
 CMD ["supervisord", "-c", "/etc/supervisord.conf"]
