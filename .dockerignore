@@ -2,8 +2,9 @@
 .git
 .gitignore
 .gitattributes
+.github
 
-# Dependencies (will be installed fresh)
+# Dependencies (installed fresh in Docker build)
 vendor
 node_modules
 
@@ -17,7 +18,7 @@ node_modules
 .DS_Store
 Thumbs.db
 
-# Laravel
+# Laravel caches (rebuilt at runtime)
 storage/logs/*
 storage/framework/cache/*
 storage/framework/sessions/*
@@ -28,10 +29,16 @@ bootstrap/cache/*
 .phpunit.result.cache
 coverage
 
-# Environment (use container env vars)
+# Local env (container uses .env.example + runtime env vars)
+.env
 .env.local
 .env.*.local
+.env.backup
+.env.production
 
 # Documentation
 README.md
 CHANGELOG.md
+
+# Alternate Dockerfiles
+Dockerfile.servercompass
