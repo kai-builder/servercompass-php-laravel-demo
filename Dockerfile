@@ -1,7 +1,6 @@
 FROM php:8.4-fpm-alpine
 
-# Install dependencies and PHP extensions in one layer
-# Using install-php-extensions for MUCH faster builds (pre-compiled)
+# Install dependencies and PHP extensions
 ADD --chmod=0755 https://github.com/mlocati/docker-php-extension-installer/releases/latest/download/install-php-extensions /usr/local/bin/
 RUN apk add --no-cache nginx supervisor curl sqlite-dev \
     && install-php-extensions pdo_mysql pdo_sqlite mbstring exif pcntl bcmath gd zip opcache \
@@ -22,14 +21,9 @@ RUN composer install --no-dev --no-scripts --no-autoloader --prefer-dist --no-pr
 # Copy application files
 COPY . .
 
-# Setup environment, generate key if needed, and set permissions
+# Setup application (key will be generated at runtime)
 RUN composer dump-autoload --optimize \
-    && cp -n .env.example .env || true \
-    && php artisan key:generate --force \
-    && chown -R www-data:www-data /var/www/html \
-    && chmod -R 755 storage bootstrap/cache \
-    && touch database/database.sqlite \
-    && chown www-data:www-data database/database.sqlite \
+    && mkdir -p storage/logs storage/framework/cache storage/framework/sessions storage/framework/views bootstrap/cache \
     && mkdir -p /run/nginx
 
 # Configure Nginx
@@ -40,15 +34,25 @@ server {
     root /var/www/html/public;
     index index.php;
 
+    add_header X-Frame-Options "SAMEORIGIN";
+    add_header X-Content-Type-Options "nosniff";
+
+    charset utf-8;
+
     location / {
         try_files \$uri \$uri/ /index.php?\$query_string;
     }
 
+    location = /favicon.ico { access_log off; log_not_found off; }
+    location = /robots.txt  { access_log off; log_not_found off; }
+
+    error_page 404 /index.php;
+
     location ~ \\.php\$ {
         fastcgi_pass 127.0.0.1:9000;
-        fastcgi_index index.php;
         fastcgi_param SCRIPT_FILENAME \$realpath_root\$fastcgi_script_name;
         include fastcgi_params;
+        fastcgi_hide_header X-Powered-By;
     }
 
     location ~ /\\.(?!well-known).* {
@@ -85,9 +89,13 @@ stderr_logfile=/dev/stderr
 stderr_logfile_maxbytes=0
 EOF
 
+# Copy and set entrypoint
+COPY docker-entrypoint.sh /usr/local/bin/
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh
+
 EXPOSE 80
 
-HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
+HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
     CMD curl -f http://localhost/ || exit 1
 
-CMD ["supervisord", "-c", "/etc/supervisord.conf"]
+ENTRYPOINT ["docker-entrypoint.sh"]
