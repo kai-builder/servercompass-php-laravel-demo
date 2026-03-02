@@ -38,5 +38,9 @@ php artisan config:cache 2>/dev/null || true
 php artisan route:cache 2>/dev/null || true
 php artisan view:cache 2>/dev/null || true
 
+# Render nginx config with actual PORT value (default 80)
+export PORT="${PORT:-80}"
+envsubst '${PORT}' < /etc/nginx/http.d/default.conf.template > /etc/nginx/http.d/default.conf
+
 # Start supervisor
 exec supervisord -c /etc/supervisord.conf

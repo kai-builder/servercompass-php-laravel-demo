@@ -25,7 +25,7 @@ FROM php:8.4-fpm-alpine AS runtime
 # Install system packages and PHP extensions in a single RUN
 ADD --chmod=0755 https://github.com/mlocati/docker-php-extension-installer/releases/latest/download/install-php-extensions /usr/local/bin/
 
-RUN apk add --no-cache nginx supervisor curl sqlite-dev wget \
+RUN apk add --no-cache nginx supervisor curl sqlite-dev wget gettext \
     && install-php-extensions pdo_mysql pdo_sqlite mbstring exif pcntl bcmath gd zip opcache \
     && rm -rf /var/cache/apk/*
 
@@ -45,9 +45,9 @@ RUN mkdir -p storage/logs storage/framework/cache storage/framework/sessions \
     && chmod -R 775 storage bootstrap/cache
 
 # ── Nginx config ─────────────────────────────────────────────────────────────
-COPY <<'EOF' /etc/nginx/http.d/default.conf
+COPY <<'EOF' /etc/nginx/http.d/default.conf.template
 server {
-    listen 80;
+    listen ${PORT};
     server_name _;
     root /var/www/html/public;
     index index.php;
@@ -107,9 +107,10 @@ EOF
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 
+ENV PORT=80
 EXPOSE 80
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
-    CMD wget -qO- http://localhost/api/health || exit 1
+    CMD wget -qO- http://localhost:${PORT}/api/health || exit 1
 
 ENTRYPOINT ["docker-entrypoint.sh"]
