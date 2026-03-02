@@ -1,40 +1,115 @@
-FROM ghcr.io/railwayapp/nixpacks:ubuntu-1745885067
+# syntax=docker/dockerfile:1
+# ── Stage 1: Composer dependency install ─────────────────────────────────────
+FROM composer:2 AS composer-deps
 
-ENTRYPOINT ["/bin/bash", "-l", "-c"]
-WORKDIR /app/
-ENV DEBIAN_FRONTEND=noninteractive
-RUN apt-get update && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && apt-get install -y nodejs
-ENV PATH="/usr/local/bin:/usr/bin:/bin:$PATH"
-ENV PATH="/usr/local/bin:${PATH}"
-RUN apt-get update \
-    && apt-get install -y php php-cli php-fpm php-mysql php-zip php-gd php-mbstring php-curl php-xml unzip curl \
-    && curl -sS https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer \
-    && ln -sf /usr/local/bin/composer /usr/bin/composer
+WORKDIR /app
 
+# Copy only manifest files first — cached until composer.json/lock changes
+COPY composer.json composer.lock ./
 
+RUN composer install \
+    --no-dev \
+    --no-scripts \
+    --no-autoloader \
+    --prefer-dist \
+    --no-progress \
+    --no-interaction
 
-ARG IS_LARAVEL NIXPACKS_METADATA NIXPACKS_PHP_ROOT_DIR PORT
-ENV IS_LARAVEL=$IS_LARAVEL NIXPACKS_METADATA=$NIXPACKS_METADATA NIXPACKS_PHP_ROOT_DIR=$NIXPACKS_PHP_ROOT_DIR PORT=$PORT
+# Copy full source, then generate optimised autoloader
+COPY . .
+RUN composer dump-autoload --optimize --no-dev
 
-# setup phase
-# noop
+# ── Stage 2: Production runtime ──────────────────────────────────────────────
+FROM php:8.4-fpm-alpine AS runtime
 
-# install phase
-COPY . /app/.
-RUN  mkdir -p /var/log/nginx && mkdir -p /var/cache/nginx
-RUN  composer install --ignore-platform-reqs
-RUN  npm i
+# Install system packages and PHP extensions in a single RUN
+ADD --chmod=0755 https://github.com/mlocati/docker-php-extension-installer/releases/latest/download/install-php-extensions /usr/local/bin/
 
-# build phase
-COPY . /app/.
-RUN  npm run build
+RUN apk add --no-cache nginx supervisor curl sqlite-dev wget \
+    && install-php-extensions pdo_mysql pdo_sqlite mbstring exif pcntl bcmath gd zip opcache \
+    && rm -rf /var/cache/apk/*
 
+WORKDIR /var/www/html
 
+# Copy application from composer stage
+COPY --from=composer-deps /app ./
 
+# Ensure .env.example is present for entrypoint
+COPY .env.example .env.example
 
+# Create required directories and set permissions
+RUN mkdir -p storage/logs storage/framework/cache storage/framework/sessions \
+             storage/framework/views bootstrap/cache database /run/nginx \
+    && touch storage/logs/laravel.log database/database.sqlite \
+    && chown -R www-data:www-data storage bootstrap/cache database \
+    && chmod -R 775 storage bootstrap/cache
 
-# start
-COPY . /app
+# ── Nginx config ─────────────────────────────────────────────────────────────
+COPY <<'EOF' /etc/nginx/http.d/default.conf
+server {
+    listen 80;
+    server_name _;
+    root /var/www/html/public;
+    index index.php;
 
-CMD ["php", "artisan", "serve", "--host=0.0.0.0", "--port=${PORT:-3000}"]
-CMD ["node", "index.js"]
+    add_header X-Frame-Options "SAMEORIGIN";
+    add_header X-Content-Type-Options "nosniff";
+    charset utf-8;
+
+    location / {
+        try_files $uri $uri/ /index.php?$query_string;
+    }
+
+    location = /favicon.ico { access_log off; log_not_found off; }
+    location = /robots.txt  { access_log off; log_not_found off; }
+
+    error_page 404 /index.php;
+
+    location ~ \.php$ {
+        fastcgi_pass 127.0.0.1:9000;
+        fastcgi_param SCRIPT_FILENAME $realpath_root$fastcgi_script_name;
+        include fastcgi_params;
+        fastcgi_hide_header X-Powered-By;
+    }
+
+    location ~ /\.(?!well-known).* { deny all; }
+}
+EOF
+
+# ── Supervisor config ────────────────────────────────────────────────────────
+COPY <<'EOF' /etc/supervisord.conf
+[supervisord]
+nodaemon=true
+user=root
+logfile=/dev/null
+logfile_maxbytes=0
+pidfile=/var/run/supervisord.pid
+
+[program:php-fpm]
+command=php-fpm -F
+autostart=true
+autorestart=true
+stdout_logfile=/dev/stdout
+stdout_logfile_maxbytes=0
+stderr_logfile=/dev/stderr
+stderr_logfile_maxbytes=0
+
+[program:nginx]
+command=nginx -g "daemon off;"
+autostart=true
+autorestart=true
+stdout_logfile=/dev/stdout
+stdout_logfile_maxbytes=0
+stderr_logfile=/dev/stderr
+stderr_logfile_maxbytes=0
+EOF
+
+COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh
+
+EXPOSE 80
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
+    CMD wget -qO- http://localhost/api/health || exit 1
+
+ENTRYPOINT ["docker-entrypoint.sh"]

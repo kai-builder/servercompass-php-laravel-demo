@@ -4,11 +4,16 @@ namespace App\Support;
 
 class Environment
 {
-    public const PUBLIC_KEYS = ['APP_NAME', 'API_URL', 'ENVIRONMENT', 'VERSION'];
+    public const CONFIG_MAP = [
+        'APP_NAME' => 'app.name',
+        'API_URL' => 'servercompass.api_url',
+        'ENVIRONMENT' => 'servercompass.environment',
+        'VERSION' => 'servercompass.version',
+    ];
 
-    public static function value(string $key): string
+    public static function value(string $configKey): string
     {
-        $value = trim((string) env($key, ''));
+        $value = trim((string) config($configKey, ''));
 
         return $value === '' ? 'Not set' : $value;
     }
@@ -16,11 +21,12 @@ class Environment
     public static function publicEnvs(): array
     {
         return array_map(
-            fn (string $key) => [
+            fn (string $key, string $configKey) => [
                 'key' => $key,
-                'value' => self::value($key),
+                'value' => self::value($configKey),
             ],
-            self::PUBLIC_KEYS,
+            array_keys(self::CONFIG_MAP),
+            array_values(self::CONFIG_MAP),
         );
     }
 }
